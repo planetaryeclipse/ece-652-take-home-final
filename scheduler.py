@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 from workload import Task, Workload
 
-SCHEDULER_TIME_PRECISION = 3
+TIME_PRECISION = 3
+
+# data structures
 
 
 @dataclass
@@ -23,10 +25,116 @@ class TaskInstance:
     finish: float | None = None  # finish time
 
 
+# hyperperiod checker
+
+
+def find_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance:
+    for inst in insts:
+        if inst.start is None or inst.finish is None:
+            continue
+
+        starts = [inst.start, *inst.resumes]
+        stops = [*inst.preempts, inst.finish]
+
+        for start, stop in zip(starts, stops):
+            if start <= time and time <= stop:
+                return inst
+    raise ValueError(f"unable to find instance at specified time {time}")
+
+
+def get_end_of_current_inst_exec(inst: TaskInstance, time: float):
+    assert inst.start is not None  # typing assistance
+    assert inst.finish is not None
+
+    starts = [inst.start, *inst.resumes]
+    stops = [*inst.preempts, inst.finish]
+
+    for start, stop in zip(starts, stops):
+        if round(time - start, TIME_PRECISION) >= 0.0 and round(stop - time, TIME_PRECISION) >= 0.0:
+            return stop
+    raise RuntimeError()
+
+
+def find_hyperperiod_schedule(
+    insts: list[TaskInstance],
+    all_release_times: list[float],
+) -> list[TaskInstance] | None:
+    if len(all_release_times) < 2:
+        return None
+
+    first_hyperperiod_release_time = all_release_times[0]  # technically always 0
+    for next_possible_hyperperiod_release_time in all_release_times[1:]:
+
+        release_delta = next_possible_hyperperiod_release_time - first_hyperperiod_release_time
+
+        # gets the running task instances at the start of the assumed hyperperiods
+        first_hp_inst = find_inst_at_time(insts, first_hyperperiod_release_time)
+        next_hp_inst = find_inst_at_time(insts, next_possible_hyperperiod_release_time)
+
+        insts_in_first_hp = set([first_hp_inst])
+        insts_in_next_hp = set([next_hp_inst])
+
+        hp_rel_time = 0.0  # time within the hyperperiod
+        while True:
+            if first_hp_inst.task is not next_hp_inst.task:
+                return None
+
+            # finds the stop of execution (either preempted or finishes) for the tasks in each hyperperiod
+            first_exec_end = get_end_of_current_inst_exec(
+                first_hp_inst,
+                hp_rel_time + first_hyperperiod_release_time,
+            )
+            next_exec_end = get_end_of_current_inst_exec(
+                next_hp_inst,
+                hp_rel_time + next_possible_hyperperiod_release_time,
+            )
+
+            # check whether execution terminates at differing times
+            if round(first_exec_end - next_exec_end, TIME_PRECISION) != release_delta:
+                break  # continue on to check remaining possibilities
+
+            hp_rel_time = first_exec_end
+
+            # check whether the first hyperperiod has reached the release of the next hyperperiod
+            if round(hp_rel_time, TIME_PRECISION) == release_delta:
+                # so far everything matches in terms of execution but we must also ensure that all task instances within
+                # each prospective hyperperiod have finished to avoid any edge cases
+
+                for inst in insts_in_first_hp:
+                    assert inst.finish is not None
+                    if round(hp_rel_time + first_hyperperiod_release_time, TIME_PRECISION) >= inst.finish:
+                        break
+                for inst in insts_in_next_hp:
+                    assert inst.finish is not None
+                    if round(hp_rel_time + next_possible_hyperperiod_release_time, TIME_PRECISION) >= inst.finish:
+                        break
+
+                # at this point the execution of the hyperperiod is known so return it as a separate schedule (note that
+                # this returns immediately to ensure no integer multiples of hyperperiod are returned)
+                return list(insts_in_first_hp)
+
+            # gets the new tasks that have started
+            first_hp_inst = find_inst_at_time(insts, hp_rel_time + first_hyperperiod_release_time)
+            next_hp_inst = find_inst_at_time(insts, hp_rel_time + next_possible_hyperperiod_release_time)
+
+            insts_in_first_hp.add(first_hp_inst)
+            insts_in_next_hp.add(next_hp_inst)
+
+            # we have strayed too far and the schedule remains unfinished, so obvously we have not hit the hyperperiod
+            if next_hp_inst.finish is None:
+                break
+
+    # unable to ascertain a hyperperiod schedule from the provided schedule
+    return None
+
+
+# scheduler
+
+
 def at_task_release(
     task: Task,
     time: float,
-    precision: int = SCHEDULER_TIME_PRECISION,
+    precision: int = TIME_PRECISION,
 ) -> bool:
     """checks whether the current time should trigger a release of the provided task"""
 
@@ -40,7 +148,7 @@ def release_tasks(
     curr_time: float,
     created_insts: list[TaskInstance],
     pending_insts: list[TaskInstance],
-    precision: int = SCHEDULER_TIME_PRECISION,
+    precision: int = TIME_PRECISION,
 ) -> bool:
     """check current time against task periods and release new instances if needed"""
     all_released = True
@@ -73,7 +181,7 @@ def get_time_to_next_schedule_event(
     workload: Workload,
     running_inst: TaskInstance,
     curr_time: float,
-    precision: int = SCHEDULER_TIME_PRECISION,
+    precision: int = TIME_PRECISION,
 ) -> float:
     """gests the time until the next scheduling decision must be made"""
     # stepping through all levels of precision would be very slow so instead determine when the next event will
@@ -94,113 +202,9 @@ def get_time_to_next_schedule_event(
 class Schedule:
     workload: Workload
     insts: list[TaskInstance]
-    pass
 
 
-def find_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance:
-    for inst in insts:
-        if inst.start is None or inst.finish is None:
-            continue
-
-        starts = [inst.start, *inst.resumes]
-        stops = [*inst.preempts, inst.finish]
-
-        for start, stop in zip(starts, stops):
-            if start <= time and time <= stop:
-                return inst
-    raise ValueError(f"unable to find instance at specified time {time}")
-
-
-def get_end_of_current_inst_exec(inst: TaskInstance, time: float):
-    assert inst.start is not None  # typing assistance
-    assert inst.finish is not None
-
-    starts = [inst.start, *inst.resumes]
-    stops = [*inst.preempts, inst.finish]
-
-    for start, stop in zip(starts, stops):
-        if round(time - start, SCHEDULER_TIME_PRECISION) >= 0.0 and round(stop - time, SCHEDULER_TIME_PRECISION) >= 0.0:
-            return stop
-    raise RuntimeError()
-
-
-def find_hyperperiod_schedule(
-    schedule: Schedule,
-    all_release_times: list[float],
-) -> Schedule | None:
-    if len(all_release_times) < 2:
-        return None
-
-    first_hyperperiod_release_time = all_release_times[0]  # technically always 0
-    for next_possible_hyperperiod_release_time in all_release_times[1:]:
-
-        release_delta = next_possible_hyperperiod_release_time - first_hyperperiod_release_time
-
-        # gets the running task instances at the start of the assumed hyperperiods
-        first_hp_inst = find_inst_at_time(schedule.insts, first_hyperperiod_release_time)
-        next_hp_inst = find_inst_at_time(schedule.insts, next_possible_hyperperiod_release_time)
-
-        insts_in_first_hp = set([first_hp_inst])
-        insts_in_next_hp = set([next_hp_inst])
-
-        hp_rel_time = 0.0  # time within the hyperperiod
-        while True:
-            if first_hp_inst.task is not next_hp_inst.task:
-                return None
-
-            # finds the stop of execution (either preempted or finishes) for the tasks in each hyperperiod
-            first_exec_end = get_end_of_current_inst_exec(
-                first_hp_inst,
-                hp_rel_time + first_hyperperiod_release_time,
-            )
-            next_exec_end = get_end_of_current_inst_exec(
-                next_hp_inst,
-                hp_rel_time + next_possible_hyperperiod_release_time,
-            )
-
-            # check whether execution terminates at differing times
-            if round(first_exec_end - next_exec_end, SCHEDULER_TIME_PRECISION) != release_delta:
-                break  # continue on to check remaining possibilities
-
-            hp_rel_time = first_exec_end
-
-            # check whether the first hyperperiod has reached the release of the next hyperperiod
-            if round(hp_rel_time, SCHEDULER_TIME_PRECISION) == release_delta:
-                # so far everything matches in terms of execution but we must also ensure that all task instances within
-                # each prospective hyperperiod have finished to avoid any edge cases
-
-                for inst in insts_in_first_hp:
-                    assert inst.finish is not None
-                    if round(hp_rel_time + first_hyperperiod_release_time, SCHEDULER_TIME_PRECISION) >= inst.finish:
-                        break
-                for inst in insts_in_next_hp:
-                    assert inst.finish is not None
-                    if (
-                        round(hp_rel_time + next_possible_hyperperiod_release_time, SCHEDULER_TIME_PRECISION)
-                        >= inst.finish
-                    ):
-                        break
-
-                # at this point the execution of the hyperperiod is known so return it as a separate schedule (note that
-                # this returns immediately to ensure no integer multiples of hyperperiod are returned)
-                return Schedule(schedule.workload, list(insts_in_first_hp))
-
-            # gets the new tasks that have started
-            first_hp_inst = find_inst_at_time(schedule.insts, hp_rel_time + first_hyperperiod_release_time)
-            next_hp_inst = find_inst_at_time(schedule.insts, hp_rel_time + next_possible_hyperperiod_release_time)
-
-            insts_in_first_hp.add(first_hp_inst)
-            insts_in_next_hp.add(next_hp_inst)
-
-            # we have strayed too far and the schedule remains unfinished, so obvously we have not hit the hyperperiod
-            if next_hp_inst.finish is None:
-                break
-
-    # unable to ascertain a hyperperiod schedule from the provided schedule
-    return None
-
-
-def dm_schedule(workload: Workload, precision: int = SCHEDULER_TIME_PRECISION) -> Schedule | None:
+def dm_schedule(workload: Workload, precision: int = TIME_PRECISION) -> list[TaskInstance] | None:
     created_insts: list[TaskInstance] = []
     pending_insts: list[TaskInstance] = []
     all_release_times: list[float] = [0.0]
@@ -230,7 +234,7 @@ def dm_schedule(workload: Workload, precision: int = SCHEDULER_TIME_PRECISION) -
             # check whether a hyperperiod is found before adding the release time as nominally this would be a complete
             # second hyperperiod (to which adding another task instance would add an unncessary case)
             if len(all_release_times) >= 2:
-                hyperperiod_schedule = find_hyperperiod_schedule(Schedule(workload, created_insts), all_release_times)
+                hyperperiod_schedule = find_hyperperiod_schedule(created_insts, all_release_times)
                 if hyperperiod_schedule is not None:
                     return hyperperiod_schedule
             all_release_times.append(curr_time)
