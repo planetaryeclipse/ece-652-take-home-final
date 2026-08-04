@@ -1,5 +1,3 @@
-from typing import Any
-
 import numpy as np
 
 from dataclasses import dataclass
@@ -134,12 +132,11 @@ def find_hyperperiod_schedule(
 def at_task_release(
     task: Task,
     time: float,
-    precision: int = TIME_PRECISION,
 ) -> bool:
     """checks whether the current time should trigger a release of the provided task"""
 
     # due to floating point round off need this manual computation of the remainder
-    remainder = round(time - round(time / task.period) * task.period, precision)
+    remainder = round(time - round(time / task.period) * task.period)
     return remainder == 0.0
 
 
@@ -148,12 +145,11 @@ def release_tasks(
     curr_time: float,
     created_insts: list[TaskInstance],
     pending_insts: list[TaskInstance],
-    precision: int = TIME_PRECISION,
 ) -> bool:
     """check current time against task periods and release new instances if needed"""
     all_released = True
     for task in workload.tasks:
-        if at_task_release(task, curr_time, precision=precision):
+        if at_task_release(task, curr_time):
             inst = TaskInstance(
                 task=task,
                 release=curr_time,
@@ -204,7 +200,7 @@ class Schedule:
     insts: list[TaskInstance]
 
 
-def dm_schedule(workload: Workload, precision: int = TIME_PRECISION) -> list[TaskInstance] | None:
+def dm_schedule(workload: Workload) -> list[TaskInstance] | None:
     created_insts: list[TaskInstance] = []
     pending_insts: list[TaskInstance] = []
     all_release_times: list[float] = [0.0]
@@ -223,13 +219,7 @@ def dm_schedule(workload: Workload, precision: int = TIME_PRECISION) -> list[Tas
             running_inst.finish = curr_time
             running_inst = None
 
-        all_released = release_tasks(
-            workload,
-            curr_time,
-            created_insts,
-            pending_insts,
-            precision=precision,
-        )
+        all_released = release_tasks(workload, curr_time, created_insts, pending_insts)
         if all_released:
             # check whether a hyperperiod is found before adding the release time as nominally this would be a complete
             # second hyperperiod (to which adding another task instance would add an unncessary case)
@@ -256,11 +246,20 @@ def dm_schedule(workload: Workload, precision: int = TIME_PRECISION) -> list[Tas
             workload,
             running_inst,
             curr_time,
-            precision=precision,
         )
-        curr_time = round(curr_time + time_to_next_schedule_event, precision)
+        curr_time = round(curr_time + time_to_next_schedule_event)
         if running_inst is not None:
             running_inst.remaining_exec_time = round(
                 running_inst.remaining_exec_time - time_to_next_schedule_event,
-                precision,
             )
+
+
+def count_task_preemptions(workload: Workload, schedule: list[TaskInstance]) -> dict[Task, int]:
+    num_preempts = {task: 0 for task in workload.tasks}
+
+    schedule = schedule.copy()
+    while len(schedule) > 0:
+        inst = schedule.pop()
+        num_preempts[inst.task] += 1
+
+    return num_preempts
