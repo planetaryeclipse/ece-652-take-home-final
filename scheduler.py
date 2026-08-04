@@ -1,10 +1,11 @@
 import numpy as np
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from workload import Task, Workload
 
 TIME_PRECISION = 3
+MIN_TIMESTEP = 1e-3
 
 # data structures
 
@@ -18,15 +19,15 @@ class TaskInstance:
     remaining_exec_time: float  # time remaining in execution
 
     start: float | None = None  # start time
-    preempts: list[float] = []  # times when preempted
-    resumes: list[float] = []  # times when resume execution
+    preempts: list[float] = field(default_factory=list)  # times when preempted
+    resumes: list[float] = field(default_factory=list)  # times when resume execution
     finish: float | None = None  # finish time
 
 
 # hyperperiod checker
 
 
-def find_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance:
+def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance:
     for inst in insts:
         if inst.start is None or inst.finish is None:
             continue
@@ -40,7 +41,7 @@ def find_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance:
     raise ValueError(f"unable to find instance at specified time {time}")
 
 
-def get_end_of_current_inst_exec(inst: TaskInstance, time: float):
+def get_inst_exec_end(inst: TaskInstance, time: float):
     assert inst.start is not None  # typing assistance
     assert inst.finish is not None
 
@@ -66,8 +67,8 @@ def find_hyperperiod_schedule(
         release_delta = next_possible_hyperperiod_release_time - first_hyperperiod_release_time
 
         # gets the running task instances at the start of the assumed hyperperiods
-        first_hp_inst = find_inst_at_time(insts, first_hyperperiod_release_time)
-        next_hp_inst = find_inst_at_time(insts, next_possible_hyperperiod_release_time)
+        first_hp_inst = get_inst_at_time(insts, first_hyperperiod_release_time)
+        next_hp_inst = get_inst_at_time(insts, next_possible_hyperperiod_release_time)
 
         insts_in_first_hp = set([first_hp_inst])
         insts_in_next_hp = set([next_hp_inst])
@@ -78,11 +79,11 @@ def find_hyperperiod_schedule(
                 return None
 
             # finds the stop of execution (either preempted or finishes) for the tasks in each hyperperiod
-            first_exec_end = get_end_of_current_inst_exec(
+            first_exec_end = get_inst_exec_end(
                 first_hp_inst,
                 hp_rel_time + first_hyperperiod_release_time,
             )
-            next_exec_end = get_end_of_current_inst_exec(
+            next_exec_end = get_inst_exec_end(
                 next_hp_inst,
                 hp_rel_time + next_possible_hyperperiod_release_time,
             )
@@ -112,8 +113,8 @@ def find_hyperperiod_schedule(
                 return list(insts_in_first_hp)
 
             # gets the new tasks that have started
-            first_hp_inst = find_inst_at_time(insts, hp_rel_time + first_hyperperiod_release_time)
-            next_hp_inst = find_inst_at_time(insts, hp_rel_time + next_possible_hyperperiod_release_time)
+            first_hp_inst = get_inst_at_time(insts, hp_rel_time + first_hyperperiod_release_time)
+            next_hp_inst = get_inst_at_time(insts, hp_rel_time + next_possible_hyperperiod_release_time)
 
             insts_in_first_hp.add(first_hp_inst)
             insts_in_next_hp.add(next_hp_inst)
@@ -163,28 +164,23 @@ def release_tasks(
     return all_released
 
 
-def get_highest_priority_task(pending_insts: list[TaskInstance]) -> TaskInstance:
+def get_highest_priority_task(pending_insts: list[TaskInstance]) -> TaskInstance | None:
     """gets the highest priority task based on deadline based on deadline monotonic scheduling"""
-    curr_inst_earliest_deadline = None
-    for inst in pending_insts:
-        if curr_inst_earliest_deadline is None or inst.deadline < curr_inst_earliest_deadline.deadline:
-            curr_inst_earliest_deadline = inst
-    assert curr_inst_earliest_deadline is not None  # sanity check
-    return curr_inst_earliest_deadline
+    inst_earliest_deadline = None
+    return
 
 
 def get_time_to_next_schedule_event(
     workload: Workload,
-    running_inst: TaskInstance,
+    running_inst: TaskInstance | None,
     curr_time: float,
-    precision: int = TIME_PRECISION,
 ) -> float:
-    """gests the time until the next scheduling decision must be made"""
+    """gets the time until the next scheduling decision must be made"""
     # stepping through all levels of precision would be very slow so instead determine when the next event will
     # actually occur (either tasks are released or the current task has finished execution)
 
     time_to_next_task_releases = [
-        round(np.ceil(curr_time / task.period) * task.period - curr_time, precision) for task in workload.tasks
+        round(np.ceil((curr_time + MIN_TIMESTEP) / task.period) * task.period - curr_time) for task in workload.tasks
     ]
     time_to_next_schedule_event = min(
         running_inst.remaining_exec_time if running_inst is not None else np.inf,
@@ -196,70 +192,99 @@ def get_time_to_next_schedule_event(
 
 @dataclass
 class Schedule:
-    workload: Workload
     insts: list[TaskInstance]
 
 
-def dm_schedule(workload: Workload) -> list[TaskInstance] | None:
-    created_insts: list[TaskInstance] = []
-    pending_insts: list[TaskInstance] = []
-    all_release_times: list[float] = [0.0]
-
+@dataclass
+class AdvancingSchedule:
+    time: float = 0.0
     running_inst: TaskInstance | None = None
-    curr_time = 0.0
+    created_insts: list[TaskInstance] = field(default_factory=list)
+    pending_insts: list[TaskInstance] = field(default_factory=list)
+    possible_hp_releases: list[float] = field(default_factory=list)
 
-    while True:
-        # check to see whether any instances have violated their deadlines
-        for inst in pending_insts:
-            if curr_time > inst.deadline:
-                return None  # indicating a failed result
 
-        # check whether currently executing task (if exists) is currently running
-        if running_inst is not None and running_inst.remaining_exec_time == 0.0:
-            running_inst.finish = curr_time
-            running_inst = None
+def dm_make_scheduling_decision(
+    workload: Workload,
+    schedule: AdvancingSchedule,
+) -> bool:
+    # check to see whether any instances have violated their deadlines
+    for inst in schedule.pending_insts:
+        if schedule.time > inst.deadline:
+            return False  # failed
 
-        all_released = release_tasks(workload, curr_time, created_insts, pending_insts)
-        if all_released:
-            # check whether a hyperperiod is found before adding the release time as nominally this would be a complete
-            # second hyperperiod (to which adding another task instance would add an unncessary case)
-            if len(all_release_times) >= 2:
-                hyperperiod_schedule = find_hyperperiod_schedule(created_insts, all_release_times)
-                if hyperperiod_schedule is not None:
-                    return hyperperiod_schedule
-            all_release_times.append(curr_time)
-        highest_priority_inst = get_highest_priority_task(pending_insts)
+    # check whether currently executing task (if exists) is currently running
+    if schedule.running_inst is not None and schedule.running_inst.remaining_exec_time == 0.0:
+        schedule.pending_insts.remove(schedule.running_inst)
+        schedule.running_inst.finish = schedule.time
+        schedule.running_inst = None
 
-        # checks to see if a preemption is necessary
-        if running_inst is not highest_priority_inst and running_inst is not None:
-            running_inst.preempts.append(curr_time)
+    all_released = release_tasks(workload, schedule.time, schedule.created_insts, schedule.pending_insts)
+    if all_released:
+        schedule.possible_hp_releases.append(schedule.time)
+    priority_inst = min(
+        schedule.pending_insts,
+        key=lambda inst: inst.deadline,
+        default=None,  # idle if none pending
+    )
 
-        # handles starting or restarting the task instance
-        running_inst = highest_priority_inst
-        if running_inst.start is None:  # cold start of a task instance
-            running_inst.start = curr_time
+    # checks to see if a preemption is necessary
+    if schedule.running_inst is not priority_inst and schedule.running_inst is not None:
+        schedule.running_inst.preempts.append(schedule.time)
+
+    # handles starting or restarting the task instance
+    schedule.running_inst = priority_inst
+    if schedule.running_inst is not None:
+        if schedule.running_inst.start is None:  # cold start of a task instance
+            schedule.running_inst.start = schedule.time
         else:
-            running_inst.resumes.append(curr_time)
+            schedule.running_inst.resumes.append(schedule.time)
 
-        # simulates the increase in time and exection of the task
-        time_to_next_schedule_event = get_time_to_next_schedule_event(
-            workload,
-            running_inst,
-            curr_time,
+    return True  # no failure reported
+
+
+def dm_advance_exec(workload: Workload, schedule: AdvancingSchedule):
+    # simulates the increase in time and execution of the task (whether the task has finished will be determined )
+    time_to_next_schedule_event = get_time_to_next_schedule_event(
+        workload,
+        schedule.running_inst,
+        schedule.time,
+    )
+    print(f"time_to_next_schedule_event: {time_to_next_schedule_event}")
+    schedule.time = round(schedule.time + time_to_next_schedule_event)
+    if schedule.running_inst is not None:
+        schedule.running_inst.remaining_exec_time = round(
+            schedule.running_inst.remaining_exec_time - time_to_next_schedule_event,
         )
-        curr_time = round(curr_time + time_to_next_schedule_event)
-        if running_inst is not None:
-            running_inst.remaining_exec_time = round(
-                running_inst.remaining_exec_time - time_to_next_schedule_event,
+
+
+def dm_schedule(workload: Workload) -> Schedule | None:
+    schedule = AdvancingSchedule()
+    while True:
+        num_all_released = len(schedule.possible_hp_releases)
+        result = dm_make_scheduling_decision(workload, schedule)
+        if not result:
+            return None  # unschedulable
+
+        # check if a hyperperiod can be ascertained if a new all release point has been identified
+        upd_num_all_released = len(schedule.possible_hp_releases)
+        if upd_num_all_released > num_all_released and upd_num_all_released > 2:
+            hyperperiod_insts = find_hyperperiod_schedule(
+                schedule.created_insts,
+                schedule.possible_hp_releases,
             )
+            if hyperperiod_insts is not None:
+                return Schedule(hyperperiod_insts)
+
+        dm_advance_exec(workload, schedule)
 
 
-def count_task_preemptions(workload: Workload, schedule: list[TaskInstance]) -> dict[Task, int]:
+def count_task_preemptions(workload: Workload, schedule: Schedule) -> dict[Task, int]:
     num_preempts = {task: 0 for task in workload.tasks}
 
-    schedule = schedule.copy()
-    while len(schedule) > 0:
-        inst = schedule.pop()
+    insts = schedule.insts.copy()
+    while len(insts) > 0:
+        inst = insts.pop()
         num_preempts[inst.task] += 1
 
     return num_preempts
