@@ -1,7 +1,7 @@
-from pathlib import Path
-
 import pytest
 import rootutils
+
+from pathlib import Path
 
 from workload import Task, Workload, load_workload, parse_workload_file
 

@@ -1,9 +1,10 @@
-from scheduler import AdvancingSchedule, dm_advance_exec, dm_make_scheduling_decision
-from workload import Task, Workload
 from pytest import approx
 
+from scheduler import AdvancingSchedule, dm_advance_exec, dm_make_scheduling_decision
+from workload import Task, Workload
 
-def test_single_task():
+
+def test_single_task_manual():
     workload = Workload([Task(exec_time=1, period=3, rel_deadline=3)])
     schedule = AdvancingSchedule()
 
@@ -17,12 +18,16 @@ def test_single_task():
 
     assert schedule.running_inst is inst_1
     assert approx(schedule.time) == 0.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 1.0
 
     # advance execution to next event
     dm_advance_exec(workload, schedule)
     assert schedule.running_inst is inst_1
     assert approx(schedule.time) == 1.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 0.0
 
     # IDLE ----------------------------------------------------------
@@ -33,10 +38,14 @@ def test_single_task():
 
     assert schedule.running_inst is None
     assert approx(schedule.time) == 1.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 0.0
 
     dm_advance_exec(workload, schedule)
     assert approx(schedule.time) == 3.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 0.0
 
     # SECOND INSTANCE -----------------------------------------------
@@ -46,11 +55,19 @@ def test_single_task():
 
     assert schedule.running_inst is inst_2
     assert approx(schedule.time) == 3.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 0.0
+    assert approx(inst_2.release) == 3.0
+    assert approx(inst_2.start) == 3.0
     assert approx(inst_2.remaining_exec_time) == 1.0
 
     dm_advance_exec(workload, schedule)
     assert schedule.running_inst is inst_2
     assert approx(schedule.time) == 4.0
+    assert approx(inst_1.release) == 0.0
+    assert approx(inst_1.start) == 0.0
     assert approx(inst_1.remaining_exec_time) == 0.0
+    assert approx(inst_2.release) == 3.0
+    assert approx(inst_2.start) == 3.0
     assert approx(inst_2.remaining_exec_time) == 0.0
