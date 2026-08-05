@@ -26,7 +26,7 @@ def main():
     else:
         # count the number of pre-emptions associated with a task
         preempt_counts = count_task_preemptions(workload, hyperperiod_schedule)
-        counts = [str(preempt_counts[task]) for task in workload.tasks]
+        counts = [str(count) for count in preempt_counts]
 
         print("1")
         print(",".join(counts))

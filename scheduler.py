@@ -1,5 +1,7 @@
 import numpy as np
 
+import time
+
 from dataclasses import dataclass, field
 
 from workload import Task, Workload
@@ -62,6 +64,9 @@ def get_next_resume_time_from_idle(insts: list[TaskInstance], time: float) -> fl
 
 
 def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance | None:
+    # print(f"get inst @ time: {time}")
+    # for inst in insts:
+    #     print(f"\tinst: {inst}")
     for inst in insts:
         if inst.start is None:
             continue
@@ -92,8 +97,13 @@ def get_inst_exec_end(inst: TaskInstance, time: float):
     starts = [inst.start, *inst.resumes]
     stops = [*inst.preempts, inst.finish]
 
+    # print()
+    # print(f"time: {time}")
     for start, stop in zip(starts, stops):
-        if round(time - start, TIME_PRECISION) >= 0.0 and round(stop - time, TIME_PRECISION) >= 0.0:
+        # print(f"start: {start}, stop: {stop}")
+
+        if start <= time and time < stop:
+            # print(f"returning stop time: {stop}")
             return stop
     raise RuntimeError()
 
@@ -128,6 +138,9 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
         first_hp_inst = get_inst_at_time(schedule.created_insts, first_hp_rel_time)
         next_hp_inst = get_inst_at_time(schedule.created_insts, next_possible_hp_rel_time)
 
+        # print(f"first_hp_inst: {first_hp_inst}")
+        # print(f"next_hp_inst: {next_hp_inst}")
+
         assert isinstance(first_hp_inst, TaskInstance)
         assert isinstance(next_hp_inst, TaskInstance)
 
@@ -136,7 +149,13 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
 
         hp_rel_time = 0.0  # time within the hyperperiod
         while True:
+            # print(f"hp_rel_time: {hp_rel_time}")
+
             if first_hp_inst is None and next_hp_inst is None:
+                # print("in IDLE")
+
+                # print(f"time1: {hp_rel_time + first_hp_rel_time}")
+                # print(f"time2: {hp_rel_time + next_possible_hp_rel_time}")
                 first_resume_time = get_next_resume_time_from_idle(
                     schedule.created_insts, hp_rel_time + first_hp_rel_time
                 )
@@ -170,9 +189,13 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
 
                 pass
             elif first_hp_inst is not None and next_hp_inst is not None:
+                # print("inside NON-IDLE")
+
                 if first_hp_inst.task is not next_hp_inst.task:
+                    # print(f"breaking due to wrong task, first: {first_hp_inst.task}, next: {next_hp_inst.task}")
                     break  # originating task must match
                 elif next_hp_inst.finish is None:
+                    # print(f"right not finished")
                     # if task in next hyperperiod unfinished at this point in iteration then the hyperperiod has not yet
                     # been reached for this particular workflow
                     return None
@@ -181,11 +204,14 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
                 first_exec_end = get_inst_exec_end(first_hp_inst, hp_rel_time + first_hp_rel_time)
                 next_exec_end = get_inst_exec_end(next_hp_inst, hp_rel_time + next_possible_hp_rel_time)
 
+                # print(f"first_exec_end: {first_exec_end}, next_exec_end: {next_exec_end}")
+
                 # check whether execution terminates at differing times
                 if round(next_exec_end - first_exec_end, TIME_PRECISION) != release_delta:
                     break  # continue on to check remaining possibilities
 
                 hp_rel_time = first_exec_end
+                # print(f"upd hp_rel_time: {hp_rel_time}")
 
                 # check whether the first hyperperiod has reached the release of the next hyperperiod
                 if round(hp_rel_time, TIME_PRECISION) == release_delta:
@@ -204,19 +230,27 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
                     # at this point the execution of the hyperperiod is known so return it as a separate schedule (note that
                     # this returns immediately to ensure no integer multiples of hyperperiod are returned)
                     return list(insts_in_first_hp)
-
-                # gets the new tasks that have started
-                first_hp_inst = get_inst_at_time(schedule.created_insts, hp_rel_time + first_hp_rel_time)
-                next_hp_inst = get_inst_at_time(schedule.created_insts, hp_rel_time + next_possible_hp_rel_time)
-
-                if first_hp_inst is not None and first_hp_inst not in insts_in_first_hp:
-                    insts_in_first_hp.append(first_hp_inst)
-                if next_hp_inst is not None and next_hp_inst not in insts_in_next_hp:
-                    insts_in_next_hp.append(next_hp_inst)
             else:
                 return None  # one hyperperiod has a running task instance and the othre is idle
 
+            # gets the new tasks that have started
+            first_hp_inst = get_inst_at_time(schedule.created_insts, hp_rel_time + first_hp_rel_time)
+            next_hp_inst = get_inst_at_time(schedule.created_insts, hp_rel_time + next_possible_hp_rel_time)
+
+            if first_hp_inst is not None and first_hp_inst not in insts_in_first_hp:
+                insts_in_first_hp.append(first_hp_inst)
+            if next_hp_inst is not None and next_hp_inst not in insts_in_next_hp:
+                insts_in_next_hp.append(next_hp_inst)
+
+            # print("advancing check...")
+
+        # time.sleep(0.4)
+        # print()
+        # print("starting next check...")
+        # print()
+
     # unable to ascertain a hyperperiod schedule from the provided schedule
+    # print("no hyperperiod detected")
     return None
 
 
@@ -230,7 +264,17 @@ def at_task_release(
     """checks whether the current time should trigger a release of the provided task"""
 
     # due to floating point round off need this manual computation of the remainder
-    remainder = round(time - round(time / task.period) * task.period)
+    remainder = round(
+        time
+        - np.floor(
+            time / task.period,
+        )
+        * task.period,
+        TIME_PRECISION,
+    )
+
+    # print(f"task: {task}, time: {time}, remainder: {remainder}")
+
     return remainder == 0.0
 
 
@@ -266,13 +310,20 @@ def get_time_to_next_schedule_event(
     # stepping through all levels of precision would be very slow so instead determine when the next event will
     # actually occur (either tasks are released or the current task has finished execution)
 
+    # print(f"curr remaining_exec_time: {running_inst.remaining_exec_time if running_inst is not None else None}")
+
     time_to_next_task_releases = [
-        round(np.ceil((curr_time + MIN_TIMESTEP) / task.period) * task.period - curr_time) for task in workload.tasks
+        round(np.ceil((curr_time + MIN_TIMESTEP) / task.period) * task.period - curr_time, TIME_PRECISION)
+        for task in workload.tasks
     ]
+
     time_to_next_schedule_event = min(
         running_inst.remaining_exec_time if running_inst is not None else np.inf,
         *time_to_next_task_releases,
     )
+
+    # print(f"time_to_next_task_release: {time_to_next_task_releases}")
+    # print(f"time_to_next_schedule_event: {time_to_next_schedule_event}")
 
     return time_to_next_schedule_event
 
@@ -295,9 +346,13 @@ def dm_make_scheduling_decision(
     all_released = release_tasks(workload, schedule.time, schedule.created_insts, schedule.pending_insts)
     if all_released:
         schedule.possible_hp_releases.append(schedule.time)
+
+    # for inst in schedule.pending_insts:
+    #     print(f"pending inst: {inst}")
+
     priority_inst = min(
         schedule.pending_insts,
-        key=lambda inst: inst.deadline,
+        key=lambda inst: inst.task.rel_deadline,  # EDF if inst.deadline
         default=None,  # idle if none pending
     )
 
@@ -323,16 +378,23 @@ def dm_advance_exec(workload: Workload, schedule: AdvancingSchedule):
         schedule.running_inst,
         schedule.time,
     )
-    schedule.time = round(schedule.time + time_to_next_schedule_event)
+
+    # print(f"time_to_next_schedule_event: {time_to_next_schedule_event}")
+
+    schedule.time = round(schedule.time + time_to_next_schedule_event, TIME_PRECISION)
     if schedule.running_inst is not None:
         schedule.running_inst.remaining_exec_time = round(
-            schedule.running_inst.remaining_exec_time - time_to_next_schedule_event,
+            schedule.running_inst.remaining_exec_time - time_to_next_schedule_event, TIME_PRECISION
         )
 
 
 def dm_schedule(workload: Workload) -> Schedule | None:
     schedule = AdvancingSchedule()
     while True:
+        # print(
+        #     f"@ start schedule time: {schedule.time}, inst id: {workload.tasks.index(schedule.running_inst.task) if schedule.running_inst is not None else None}"
+        # )
+
         num_all_released = len(schedule.possible_hp_releases)
         result = dm_make_scheduling_decision(workload, schedule)
         if not result:
@@ -345,15 +407,21 @@ def dm_schedule(workload: Workload) -> Schedule | None:
             if hyperperiod_insts is not None:
                 return Schedule(hyperperiod_insts)
 
+        # print(
+        #     f"@ chosen inst id: {workload.tasks.index(schedule.running_inst.task) if schedule.running_inst is not None else None}"
+        # )
+
+        # print("advancing...")
         dm_advance_exec(workload, schedule)
 
+        # print()
 
-def count_task_preemptions(workload: Workload, schedule: Schedule) -> dict[Task, int]:
-    num_preempts = {task: 0 for task in workload.tasks}
 
+def count_task_preemptions(workload: Workload, schedule: Schedule) -> list[int]:
+    num_preempts = [0 for task in workload.tasks]
     insts = schedule.insts.copy()
     while len(insts) > 0:
         inst = insts.pop()
-        num_preempts[inst.task] += 1
-
+        idx = workload.tasks.index(inst.task)
+        num_preempts[idx] += len(inst.preempts)
     return num_preempts
