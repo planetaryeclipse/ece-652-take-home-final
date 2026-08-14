@@ -2,8 +2,13 @@
 
 from pytest import approx
 
-from scheduler import AdvancingSchedule, dm_advance_exec, dm_make_scheduling_decision
-from workload import Task, Workload
+from scheduler import (
+    AdvancingSchedule,
+    Task,
+    Workload,
+    dm_advance_exec,
+    dm_make_scheduling_decision,
+)
 
 
 def test_single_task_manual():

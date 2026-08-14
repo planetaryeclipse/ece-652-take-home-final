@@ -1,8 +1,7 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
-from scheduler import count_task_preemptions, dm_schedule
-from workload import load_workload
+from scheduler import count_task_preemptions, dm_schedule, load_workload
 
 
 def main():

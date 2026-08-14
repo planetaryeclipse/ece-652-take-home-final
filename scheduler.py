@@ -1,15 +1,31 @@
 import numpy as np
 
-import time
-
+from pathlib import Path
 from dataclasses import dataclass, field
 
-from workload import Task, Workload
-
 TIME_PRECISION = 3
-MIN_TIMESTEP = 1e-3
+TIME_PRECISION_EPS = 1e-3
 
 # data structures
+
+
+@dataclass
+class Task:
+    exec_time: float
+    period: float
+    rel_deadline: float
+
+
+@dataclass
+class Workload:
+    tasks: list[Task]
+
+    def set_factor(self, factor: float):
+        # utility only for testing
+        for task in self.tasks:
+            task.exec_time = round(factor * float(task.exec_time), TIME_PRECISION)
+            task.period = round(factor * float(task.period), TIME_PRECISION)
+            task.rel_deadline = round(factor * float(task.rel_deadline), TIME_PRECISION)
 
 
 @dataclass
@@ -40,6 +56,25 @@ class AdvancingSchedule:
     possible_hp_releases: list[float] = field(default_factory=list)
 
 
+# workload methods
+
+
+def parse_workload_file(workload: str) -> Workload:
+    """loads a workload from the string specification"""
+    tasks = []
+    for task_desc in workload.split():
+        if task_desc.isspace():
+            continue
+        tasks.append(Task(*[float(val) for val in task_desc.split(",")]))
+    return Workload(tasks)
+
+
+def load_workload(path: Path) -> Workload:
+    """loads a workload from specification at provided path"""
+    with open(path, "r") as file:
+        return parse_workload_file(file.read())
+
+
 # hyperperiod checker
 
 
@@ -64,6 +99,8 @@ def get_next_resume_time_from_idle(insts: list[TaskInstance], time: float) -> fl
 
 
 def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance | None:
+    # time = round(time, TIME_PRECISION)
+
     # print(f"get inst @ time: {time}")
     # for inst in insts:
     #     print(f"\tinst: {inst}")
@@ -85,7 +122,12 @@ def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance | N
 
             for start, stop in zip(starts, stops):
                 # ensure that instances that start/resume at this time take precendence over finishing
-                if start <= time and time < stop:
+
+                # due to floating point round off errors need to perform a check independently for whether the stop time
+                # is within the range of this particular instance (otherwise just perform check manually)
+                if not round(time - stop, TIME_PRECISION) == 0.0 and (
+                    round(time - start, TIME_PRECISION) == 0.0 or (start < time and time < stop)
+                ):
                     return inst
     return None  # no active instance (idle period)
 
@@ -102,10 +144,13 @@ def get_inst_exec_end(inst: TaskInstance, time: float):
     for start, stop in zip(starts, stops):
         # print(f"start: {start}, stop: {stop}")
 
-        if start <= time and time < stop:
-            # print(f"returning stop time: {stop}")
+        # due to floating point round off errors need to perform a check independently for whether the stop time is
+        # within the range of this particular instance (otherwise just perform check manually)
+        if not round(time - stop, TIME_PRECISION) == 0.0 and (
+            round(time - start, TIME_PRECISION) == 0.0 or (start < time and time < stop)
+        ):
             return stop
-    raise RuntimeError()
+    raise RuntimeError("should be unreachable")
 
 
 def check_hp_insts_finished(
@@ -132,7 +177,7 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
 
     first_hp_rel_time = schedule.possible_hp_releases[0]  # technically always 0
     for next_possible_hp_rel_time in schedule.possible_hp_releases[1:]:
-        release_delta = next_possible_hp_rel_time - first_hp_rel_time
+        release_delta = round(next_possible_hp_rel_time - first_hp_rel_time, TIME_PRECISION)
 
         # gets the running task instances at the start of the assumed hyperperiods
         first_hp_inst = get_inst_at_time(schedule.created_insts, first_hp_rel_time)
@@ -262,20 +307,13 @@ def at_task_release(
     time: float,
 ) -> bool:
     """checks whether the current time should trigger a release of the provided task"""
-
     # due to floating point round off need this manual computation of the remainder
+    quotient = round(time / task.period, TIME_PRECISION)
     remainder = round(
-        time
-        - np.floor(
-            time / task.period,
-        )
-        * task.period,
+        time - np.floor(quotient) * task.period,
         TIME_PRECISION,
     )
-
-    # print(f"task: {task}, time: {time}, remainder: {remainder}")
-
-    return remainder == 0.0
+    return abs(remainder) < TIME_PRECISION_EPS
 
 
 def release_tasks(
@@ -313,7 +351,7 @@ def get_time_to_next_schedule_event(
     # print(f"curr remaining_exec_time: {running_inst.remaining_exec_time if running_inst is not None else None}")
 
     time_to_next_task_releases = [
-        round(np.ceil((curr_time + MIN_TIMESTEP) / task.period) * task.period - curr_time, TIME_PRECISION)
+        round(np.ceil((curr_time + TIME_PRECISION_EPS) / task.period) * task.period - curr_time, TIME_PRECISION)
         for task in workload.tasks
     ]
 
@@ -340,7 +378,10 @@ def dm_make_scheduling_decision(
             return False  # failed
 
     # check whether currently executing task (if exists) is currently running
-    if schedule.running_inst is not None and schedule.running_inst.remaining_exec_time == 0.0:
+    if (
+        schedule.running_inst is not None
+        and abs(round(schedule.running_inst.remaining_exec_time, TIME_PRECISION)) < TIME_PRECISION_EPS
+    ):
         schedule.pending_insts.remove(schedule.running_inst)
         schedule.running_inst.finish = schedule.time
         schedule.running_inst = None
