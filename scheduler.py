@@ -1,35 +1,16 @@
 import numpy as np
-
-from pathlib import Path
 from dataclasses import dataclass, field
 
-TIME_PRECISION = 3
-TIME_PRECISION_EPS = 1e-3
+from constants import TIME_PRECISION, TIME_PRECISION_EPS
+from workload import Task, Workload
 
 # data structures
 
 
 @dataclass
-class Task:
-    exec_time: float
-    period: float
-    rel_deadline: float
-
-
-@dataclass
-class Workload:
-    tasks: list[Task]
-
-    def set_factor(self, factor: float):
-        # utility only for testing
-        for task in self.tasks:
-            task.exec_time = round(factor * float(task.exec_time), TIME_PRECISION)
-            task.period = round(factor * float(task.period), TIME_PRECISION)
-            task.rel_deadline = round(factor * float(task.rel_deadline), TIME_PRECISION)
-
-
-@dataclass
 class TaskInstance:
+    """actual instance of a task that runs on the processor"""
+
     task: Task  # originating task of the instance
 
     release: float  # release time
@@ -44,42 +25,30 @@ class TaskInstance:
 
 @dataclass
 class Schedule:
-    insts: list[TaskInstance]
-    hyperperiod: float
+    """stores the finalized schedule generated for the first hyperperiod"""
+
+    insts: list[TaskInstance]  # instances of tasks in the first hyperperiod
+    hyperperiod: float  # hyperperiod of the generated schedule
 
 
 @dataclass
 class AdvancingSchedule:
-    time: float = 0.0
-    running_inst: TaskInstance | None = None
-    created_insts: list[TaskInstance] = field(default_factory=list)
-    pending_insts: list[TaskInstance] = field(default_factory=list)
-    possible_hp_releases: list[float] = field(default_factory=list)
+    """stores the current state of the schedule simulation"""
 
-
-# workload methods
-
-
-def parse_workload_file(workload: str) -> Workload:
-    """loads a workload from the string specification"""
-    tasks = []
-    for task_desc in workload.split():
-        if task_desc.isspace():
-            continue
-        tasks.append(Task(*[float(val) for val in task_desc.split(",")]))
-    return Workload(tasks)
-
-
-def load_workload(path: Path) -> Workload:
-    """loads a workload from specification at provided path"""
-    with open(path, "r") as file:
-        return parse_workload_file(file.read())
+    time: float = 0.0  # current time of the simulated schedule
+    running_inst: TaskInstance | None = None  # running instance or None if idle
+    created_insts: list[TaskInstance] = field(default_factory=list)  # all created task instances (including completed)
+    pending_insts: list[TaskInstance] = field(default_factory=list)  # all instances currently running and need to run
+    possible_hp_releases: list[float] = field(
+        default_factory=list
+    )  # times when all tasks released (candidates for hyperperiod boundary)
 
 
 # hyperperiod checker
 
 
 def get_next_resume_time_from_idle(insts: list[TaskInstance], time: float) -> float | None:
+    """recovers the next time offset from the provided idle time when some task instance resumes"""
     assert get_inst_at_time(insts, time) is None  # sanity chech
 
     min_rel_start_time = None
@@ -100,6 +69,8 @@ def get_next_resume_time_from_idle(insts: list[TaskInstance], time: float) -> fl
 
 
 def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance | None:
+    """obtains the current task instance at the specified time (if not idle and generated up to that point)"""
+
     for inst in insts:
         if inst.start is None:
             continue
@@ -129,6 +100,8 @@ def get_inst_at_time(insts: list[TaskInstance], time: float) -> TaskInstance | N
 
 
 def get_inst_exec_end(inst: TaskInstance, time: float):
+    """gets the next time when execution ends (could be preemption or task instance finishing execution)"""
+
     assert inst.start is not None  # typing assistance
     assert inst.finish is not None
 
@@ -152,6 +125,7 @@ def check_hp_insts_finished(
     insts_in_first_hp: list[TaskInstance],
     insts_in_next_hp: list[TaskInstance],
 ) -> bool:
+    """checks whether all instances in the proposed hyperperiods have completed execution"""
     for inst in insts_in_first_hp:
         assert inst.finish is not None
         if round(hp_rel_time + first_hp_rel_time, TIME_PRECISION) >= inst.finish:
@@ -164,8 +138,17 @@ def check_hp_insts_finished(
 
 
 def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> tuple[list[TaskInstance], float] | None:
+    """attempts to extract a hyperperiod schedule out of the current simulation state if it exists"""
+
     if len(schedule.possible_hp_releases) < 2:
         return None
+
+    # searches for the hyperperiod by choosing a starting point for the second period (which must occur at the point
+    # where all tasks were released) and comparing the execution of task instances with the generated simulation
+    # schedule starting from the initial release up to the next joint release
+
+    # if the exeuction of both the "first" and "next" hyperperiods are the same then a valid hyperperiod schedule has
+    # been identified and the task instances of the first hyperperiod are returned along with the hyperperiod length
 
     first_hp_rel_time = schedule.possible_hp_releases[0]  # technically always 0
     for i, next_possible_hp_rel_time in enumerate(schedule.possible_hp_releases[1:]):
@@ -192,7 +175,6 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> tuple[list[TaskInst
                 )
 
                 if first_resume_time is not None and next_resume_time is not None:
-
                     if (
                         abs(round(next_resume_time - first_resume_time - release_delta, TIME_PRECISION))
                         > TIME_PRECISION_EPS
@@ -335,6 +317,8 @@ def dm_make_scheduling_decision(
     workload: Workload,
     schedule: AdvancingSchedule,
 ) -> bool:
+    """handles task termination behavior after exeuction, releases new tasks, and chooses which to run (if any)"""
+
     # must check whether any instances have failed before removing them from pending if finished as this ensures that
     # when the current task ends this condition is checked immediately and correctly assess whether the termination
     # occurred after the specified deadline
@@ -402,6 +386,8 @@ def dm_make_scheduling_decision(
 
 
 def dm_advance_exec(workload: Workload, schedule: AdvancingSchedule):
+    """advances the simulation until the next discrete event (release from idle, preemption, execution finishing)"""
+
     # simulates the increase in time and execution of the task (whether the task has finished will be determined )
     time_to_next_schedule_event = get_time_to_next_schedule_event(
         workload,
@@ -417,6 +403,7 @@ def dm_advance_exec(workload: Workload, schedule: AdvancingSchedule):
 
 
 def dm_schedule(workload: Workload) -> Schedule | None:
+    """attempts to generate a schedule for the first hyperperiod if the provided workload is schedulable"""
     schedule = AdvancingSchedule()
     while True:
         num_all_released = len(schedule.possible_hp_releases)
@@ -435,6 +422,7 @@ def dm_schedule(workload: Workload) -> Schedule | None:
 
 
 def count_task_preemptions(workload: Workload, schedule: Schedule) -> list[int]:
+    """counts the total number of preemptions of each task across all instances in the first hyperperiod"""
     num_preempts = [0 for _ in workload.tasks]
     insts = schedule.insts.copy()
     while len(insts) > 0:

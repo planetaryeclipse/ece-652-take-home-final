@@ -3,7 +3,7 @@ import rootutils
 
 from pathlib import Path
 
-from scheduler import Task, Workload, load_workload, parse_workload_file
+from workload import Task, Workload, load_workload, parse_workload_file
 
 workload_1, expected_1 = """
 1,3,3

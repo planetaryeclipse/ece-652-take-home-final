@@ -1,7 +1,7 @@
-import pytest
 import rootutils
 
-from scheduler import count_task_preemptions, dm_schedule, load_workload
+from scheduler import count_task_preemptions, dm_schedule
+from workload import load_workload
 
 _proj_root = rootutils.setup_root(search_from=__file__)
 

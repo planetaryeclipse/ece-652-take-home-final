@@ -1,7 +1,8 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
-from scheduler import count_task_preemptions, dm_schedule, load_workload
+from scheduler import count_task_preemptions, dm_schedule
+from workload import load_workload
 
 
 def main():
@@ -22,6 +23,7 @@ def main():
     if hyperperiod_schedule is None:
         # unschedulable
         print("0")
+        print()
     else:
         # count the number of pre-emptions associated with a task
         preempt_counts = count_task_preemptions(workload, hyperperiod_schedule)
