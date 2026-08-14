@@ -332,7 +332,9 @@ def dm_make_scheduling_decision(
     workload: Workload,
     schedule: AdvancingSchedule,
 ) -> bool:
-    # check to see whether any instances have violated their deadlines
+    # must check whether any instances have failed before removing them from pending if finished as this ensures that
+    # when the current task ends this condition is checked immediately and correctly assess whether the termination
+    # occurred after the specified deadline
     for inst in schedule.pending_insts:
         if schedule.time > inst.deadline:
             return False  # failed
