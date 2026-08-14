@@ -45,6 +45,7 @@ class TaskInstance:
 @dataclass
 class Schedule:
     insts: list[TaskInstance]
+    hyperperiod: float
 
 
 @dataclass
@@ -162,12 +163,12 @@ def check_hp_insts_finished(
     return True
 
 
-def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] | None:
+def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> tuple[list[TaskInstance], float] | None:
     if len(schedule.possible_hp_releases) < 2:
         return None
 
     first_hp_rel_time = schedule.possible_hp_releases[0]  # technically always 0
-    for next_possible_hp_rel_time in schedule.possible_hp_releases[1:]:
+    for i, next_possible_hp_rel_time in enumerate(schedule.possible_hp_releases[1:]):
         release_delta = round(next_possible_hp_rel_time - first_hp_rel_time, TIME_PRECISION)
 
         # gets the running task instances at the start of the assumed hyperperiods
@@ -212,7 +213,7 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
 
                         # at this point the execution of the hyperperiod is known so return it as a separate schedule (note that
                         # this returns immediately to ensure no integer multiples of hyperperiod are returned)
-                        return list(insts_in_first_hp)
+                        return list(insts_in_first_hp), schedule.possible_hp_releases[i + 1]
                 else:
                     # first_hp_inst being None is unreachable but
                     break  # invalid
@@ -252,7 +253,7 @@ def get_hyperperiod_schedule(schedule: AdvancingSchedule) -> list[TaskInstance] 
 
                     # at this point the execution of the hyperperiod is known so return it as a separate schedule (note that
                     # this returns immediately to ensure no integer multiples of hyperperiod are returned)
-                    return list(insts_in_first_hp)
+                    return list(insts_in_first_hp), schedule.possible_hp_releases[i + 1]
             else:
                 return None  # one hyperperiod has a running task instance and the othre is idle
 
@@ -354,11 +355,36 @@ def dm_make_scheduling_decision(
     if all_released:
         schedule.possible_hp_releases.append(schedule.time)
 
-    priority_inst = min(
-        schedule.pending_insts,
-        key=lambda inst: inst.task.rel_deadline,  # EDF if inst.deadline
-        default=None,  # idle if none pending
-    )
+    # to match the behavior used by cheddar which seemingly picks the instances with the lowest relative deadline first
+    # and then chooses the instance with the highest period if there is a tie to go first
+
+    if len(schedule.pending_insts) == 0:
+        priority_inst = None
+    else:
+        lowest_rel_deadline = min([inst.task.rel_deadline for inst in schedule.pending_insts])
+        high_priority_insts = [
+            inst
+            for inst in schedule.pending_insts
+            if abs(inst.task.rel_deadline - lowest_rel_deadline) < TIME_PRECISION_EPS
+        ]
+
+        if len(high_priority_insts) == 1:
+            priority_inst = high_priority_insts[0]
+        else:
+            # choose instance with highest period (if those are matching then have to just take first element)
+            highest_period = max([inst.task.period for inst in high_priority_insts])
+            high_priority_insts = [
+                inst for inst in high_priority_insts if abs(inst.task.period - highest_period) < TIME_PRECISION_EPS
+            ]
+            priority_inst = high_priority_insts[0]
+
+    # old implementation of priority which is correct deadline monotonic scheduling but didn't match cheddar results
+
+    # priority_inst = min(
+    #     schedule.pending_insts,
+    #     key=lambda inst: inst.task.rel_deadline,  # EDF if inst.deadline
+    #     default=None,  # idle if none pending
+    # )
 
     # checks to see if a preemption is necessary
     if schedule.running_inst is not priority_inst and schedule.running_inst is not None:
@@ -401,14 +427,15 @@ def dm_schedule(workload: Workload) -> Schedule | None:
         # check if a hyperperiod can be ascertained if a new all release point has been identified
         upd_num_all_released = len(schedule.possible_hp_releases)
         if upd_num_all_released > num_all_released and upd_num_all_released > 2:
-            hyperperiod_insts = get_hyperperiod_schedule(schedule)
-            if hyperperiod_insts is not None:
-                return Schedule(hyperperiod_insts)
+            result = get_hyperperiod_schedule(schedule)
+            if result is not None:
+                hyperperiod_insts, hyperperiod = result
+                return Schedule(hyperperiod_insts, hyperperiod)
         dm_advance_exec(workload, schedule)
 
 
 def count_task_preemptions(workload: Workload, schedule: Schedule) -> list[int]:
-    num_preempts = [0 for task in workload.tasks]
+    num_preempts = [0 for _ in workload.tasks]
     insts = schedule.insts.copy()
     while len(insts) > 0:
         inst = insts.pop()

@@ -46,11 +46,12 @@ def test_single_task_manual():
     # LAST SCHEDULING CALL -------------------------------------------
     assert dm_make_scheduling_decision(workload, schedule)
 
-    hyperperiod_schedule = get_hyperperiod_schedule(schedule)
-    assert hyperperiod_schedule is not None
-    assert len(hyperperiod_schedule) == 1
+    result = get_hyperperiod_schedule(schedule)
+    assert result is not None
+    hyperperiod_insts, hyperperiod = result
+    assert len(hyperperiod_insts) == 1
 
-    inst = hyperperiod_schedule[0]
+    inst = hyperperiod_insts[0]
     assert approx(inst.release) == 0.0
     assert approx(inst.start) == 0.0
     assert approx(inst.finish) == 1.0
